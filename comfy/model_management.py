@@ -16,11 +16,42 @@ import psutil
 
 import torch_directml
 
+from for_amdgpus.atiadlxx import ATIADLxx
+
 set_vram_to = NORMAL_VRAM
+adl = None
+
+
+def get_torch_device():
+    if vram_state == CPU:
+        return torch.device("cpu")
+    
+    if torch_directml.is_available():
+        return torch_directml.device()
+
+    return torch.cuda.current_device()
+
 
 try:
     import torch
-    total_vram = torch.cuda.mem_get_info(torch.cuda.current_device())[1] / (1024 * 1024)
+    if get_torch_device().type == 'privateuseone':
+        if 'AMD' in torch_directml.device_name(0):
+            try:
+                print("Apply memory size estimation for AMDGPUs (with DirectML).")
+                adl = ATIADLxx()
+                total_vram = adl.getMemoryInfo2(0).iHyperMemorySize / (1024 * 1024)
+            except RuntimeError as e:
+                if str(e) == 'NOT_WINDOWS':
+                    print("Warning: memory size estimation for AMDGPU is disabled. Because this is not Windows platform.")
+                else:
+                    print("Warning: memory size estimation for AMDGPU is disabled. Because there is an unknown error.")
+            except FileNotFoundError:
+                print("Warning: memory size estimation for AMDGPU is disabled. Because couldn't find 'atiadlxx.dll'. Please install GPU driver downloaded from AMD.com.")
+        else:
+            print("Cannot estimate vram size due to GPU vendor.")
+            total_vram = 6144
+    else:
+        total_vram = torch.cuda.mem_get_info(torch.cuda.current_device())[1] / (1024 * 1024)
     total_ram = psutil.virtual_memory().total / (1024 * 1024)
     forced_normal_vram = "--normalvram" in sys.argv
     if not forced_normal_vram:
@@ -169,15 +200,6 @@ def unload_if_low_vram(model):
         return model.cpu()
     return model
 
-def get_torch_device():
-    if vram_state == CPU:
-        return torch.device("cpu")
-    
-    if torch_directml.is_available():
-        return torch_directml.device()
-
-    return torch.cuda.current_device()
-
 def get_autocast_device(dev):
     if hasattr(dev, 'type'):
         return dev.type
@@ -199,10 +221,14 @@ def get_free_memory(dev=None, torch_free_too=False):
         if dev.type == 'cpu':
             mem_free_total = psutil.virtual_memory().available
             mem_free_torch = mem_free_total
-        elif dev.type == 'privateuseone':
-            # TODO
-            mem_free_total = 99999
-            mem_free_torch = 99999
+        elif dev.type == 'privateuseone' and adl is not None:
+            mem_active = adl.getDedicatedVRAMUsage(0)
+            mem_total = adl.getMemoryInfo2(0).iHyperMemorySize
+            mem_free_total = mem_total - mem_active * (1 << 20)
+            mem_free_torch = mem_free_total # need more fix
+        else:
+            mem_free_total = 8594128896 # 8GB
+            mem_free_torch = 8594128896
     else:
         stats = torch.cuda.memory_stats(dev)
         mem_active = stats['active_bytes.all.current']
