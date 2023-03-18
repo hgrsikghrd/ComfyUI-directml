@@ -1,6 +1,7 @@
-torch
+torch==1.13.1
 torchdiffeq
 torchsde
+torch-directml
 einops
 open-clip-torch
 transformers

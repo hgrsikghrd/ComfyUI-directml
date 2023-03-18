@@ -14,6 +14,8 @@ total_vram_available_mb = -1
 import sys
 import psutil
 
+import torch_directml
+
 set_vram_to = NORMAL_VRAM
 
 try:
@@ -125,7 +127,7 @@ def load_model_gpu(model):
         pass
     elif vram_state == NORMAL_VRAM or vram_state == HIGH_VRAM:
         model_accelerated = False
-        real_model.cuda()
+        real_model.to(get_torch_device())
     else:
         if vram_state == NO_VRAM:
             device_map = accelerate.infer_auto_device_map(real_model, max_memory={0: "256MiB", "cpu": "16GiB"})
@@ -152,13 +154,13 @@ def load_controlnet_gpu(models):
 
     current_gpu_controlnets = []
     for m in models:
-        current_gpu_controlnets.append(m.cuda())
+        current_gpu_controlnets.append(m.to(get_torch_device()))
 
 
 def load_if_low_vram(model):
     global vram_state
     if vram_state == LOW_VRAM or vram_state == NO_VRAM:
-        return model.cuda()
+        return model.to(get_torch_device())
     return model
 
 def unload_if_low_vram(model):
@@ -170,8 +172,11 @@ def unload_if_low_vram(model):
 def get_torch_device():
     if vram_state == CPU:
         return torch.device("cpu")
-    else:
-        return torch.cuda.current_device()
+    
+    if torch_directml.is_available():
+        return torch_directml.device()
+
+    return torch.cuda.current_device()
 
 def get_autocast_device(dev):
     if hasattr(dev, 'type'):
@@ -190,9 +195,14 @@ def get_free_memory(dev=None, torch_free_too=False):
     if dev is None:
         dev = get_torch_device()
 
-    if hasattr(dev, 'type') and dev.type == 'cpu':
-        mem_free_total = psutil.virtual_memory().available
-        mem_free_torch = mem_free_total
+    if hasattr(dev, 'type'):
+        if dev.type == 'cpu':
+            mem_free_total = psutil.virtual_memory().available
+            mem_free_torch = mem_free_total
+        elif dev.type == 'privateuseone':
+            # TODO
+            mem_free_total = 99999
+            mem_free_torch = 99999
     else:
         stats = torch.cuda.memory_stats(dev)
         mem_active = stats['active_bytes.all.current']
@@ -222,6 +232,9 @@ def cpu_mode():
 def should_use_fp16():
     if cpu_mode():
         return False #TODO ?
+
+    if get_torch_device().type == "privateuseone":
+        return False
 
     if torch.cuda.is_bf16_supported():
         return True
