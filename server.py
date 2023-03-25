@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import nodes
+import folder_paths
 import execution
 import uuid
 import json
@@ -75,10 +76,7 @@ class PromptServer():
 
         @routes.get("/embeddings")
         def get_embeddings(self):
-            models_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "models")
-            embed_dir = os.path.join(models_dir, "embeddings")
-            embeddings = nodes.filter_files_extensions(nodes.recursive_search(embed_dir), nodes.supported_pt_extensions)
-
+            embeddings = folder_paths.get_filename_list("embeddings")
             return web.json_response(list(map(lambda a: os.path.splitext(a)[0].lower(), embeddings)))
 
         @routes.get("/extensions")
@@ -117,19 +115,26 @@ class PromptServer():
                 return web.Response(status=400)
 
 
-        @routes.get("/view/{file}")
+        @routes.get("/view")
         async def view_image(request):
-            if "file" in request.match_info:
+            if "filename" in request.rel_url.query:
                 type = request.rel_url.query.get("type", "output")
                 if type not in ["output", "input", "temp"]:
                     return web.Response(status=400)
 
                 output_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), type)
-                file = request.match_info["file"]
-                file = os.path.basename(file)
-                file = os.path.join(output_dir, file)
+                if "subfolder" in request.rel_url.query:
+                    full_output_dir = os.path.join(output_dir, request.rel_url.query["subfolder"])
+                    if os.path.commonpath((os.path.realpath(full_output_dir), output_dir)) != output_dir:
+                        return web.Response(status=403)
+                    output_dir = full_output_dir
+
+                filename = request.rel_url.query["filename"]
+                filename = os.path.basename(filename)
+                file = os.path.join(output_dir, filename)
+
                 if os.path.isfile(file):
-                    return web.FileResponse(file)
+                    return web.FileResponse(file, headers={"Content-Disposition": f"filename=\"{filename}\""})
                 
             return web.Response(status=404)
 

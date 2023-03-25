@@ -31,6 +31,8 @@ def before_node_execution():
 def interrupt_processing(value=True):
     model_management.interrupt_current_processing(value)
 
+MAX_RESOLUTION=8192
+
 class CLIPTextEncode:
     @classmethod
     def INPUT_TYPES(s):
@@ -59,10 +61,10 @@ class ConditioningSetArea:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {"conditioning": ("CONDITIONING", ),
-                              "width": ("INT", {"default": 64, "min": 64, "max": 4096, "step": 64}),
-                              "height": ("INT", {"default": 64, "min": 64, "max": 4096, "step": 64}),
-                              "x": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 64}),
-                              "y": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 64}),
+                              "width": ("INT", {"default": 64, "min": 64, "max": MAX_RESOLUTION, "step": 64}),
+                              "height": ("INT", {"default": 64, "min": 64, "max": MAX_RESOLUTION, "step": 64}),
+                              "x": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 64}),
+                              "y": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 64}),
                               "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
                              }}
     RETURN_TYPES = ("CONDITIONING",)
@@ -337,7 +339,7 @@ class CLIPLoader:
 
     def load_clip(self, clip_name):
         clip_path = folder_paths.get_full_path("clip", clip_name)
-        clip = comfy.sd.load_clip(ckpt_path=clip_path, embedding_directory=CheckpointLoader.embedding_directory)
+        clip = comfy.sd.load_clip(ckpt_path=clip_path, embedding_directory=folder_paths.get_folder_paths("embeddings"))
         return (clip,)
 
 class CLIPVisionLoader:
@@ -412,8 +414,8 @@ class EmptyLatentImage:
 
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": { "width": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 64}),
-                              "height": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 64}),
+        return {"required": { "width": ("INT", {"default": 512, "min": 64, "max": MAX_RESOLUTION, "step": 64}),
+                              "height": ("INT", {"default": 512, "min": 64, "max": MAX_RESOLUTION, "step": 64}),
                               "batch_size": ("INT", {"default": 1, "min": 1, "max": 64})}}
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "generate"
@@ -433,8 +435,8 @@ class LatentUpscale:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": { "samples": ("LATENT",), "upscale_method": (s.upscale_methods,),
-                              "width": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 64}),
-                              "height": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 64}),
+                              "width": ("INT", {"default": 512, "min": 64, "max": MAX_RESOLUTION, "step": 64}),
+                              "height": ("INT", {"default": 512, "min": 64, "max": MAX_RESOLUTION, "step": 64}),
                               "crop": (s.crop_methods,)}}
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "upscale"
@@ -495,9 +497,9 @@ class LatentComposite:
     def INPUT_TYPES(s):
         return {"required": { "samples_to": ("LATENT",),
                               "samples_from": ("LATENT",),
-                              "x": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 8}),
-                              "y": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 8}),
-                              "feather": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 8}),
+                              "x": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 8}),
+                              "y": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 8}),
+                              "feather": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 8}),
                               }}
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "composite"
@@ -536,10 +538,10 @@ class LatentCrop:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": { "samples": ("LATENT",),
-                              "width": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 64}),
-                              "height": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 64}),
-                              "x": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 8}),
-                              "y": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 8}),
+                              "width": ("INT", {"default": 512, "min": 64, "max": MAX_RESOLUTION, "step": 64}),
+                              "height": ("INT", {"default": 512, "min": 64, "max": MAX_RESOLUTION, "step": 64}),
+                              "x": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 8}),
+                              "y": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 8}),
                               }}
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "crop"
@@ -718,7 +720,7 @@ class KSamplerAdvanced:
 class SaveImage:
     def __init__(self):
         self.output_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "output")
-        self.url_suffix = ""
+        self.type = "output"
 
     @classmethod
     def INPUT_TYPES(s):
@@ -737,25 +739,35 @@ class SaveImage:
 
     def save_images(self, images, filename_prefix="ComfyUI", prompt=None, extra_pnginfo=None):
         def map_filename(filename):
-            prefix_len = len(filename_prefix)
+            prefix_len = len(os.path.basename(filename_prefix))
             prefix = filename[:prefix_len + 1]
             try:
                 digits = int(filename[prefix_len + 1:].split('_')[0])
             except:
                 digits = 0
             return (digits, prefix)
+
+        subfolder = os.path.dirname(os.path.normpath(filename_prefix))
+        filename = os.path.basename(os.path.normpath(filename_prefix))
+
+        full_output_folder = os.path.join(self.output_dir, subfolder)
+
+        if os.path.commonpath((self.output_dir, os.path.realpath(full_output_folder))) != self.output_dir:
+            print("Saving image outside the output folder is not allowed.")
+            return {}
+
         try:
-            counter = max(filter(lambda a: a[1][:-1] == filename_prefix and a[1][-1] == "_", map(map_filename, os.listdir(self.output_dir))))[0] + 1
+            counter = max(filter(lambda a: a[1][:-1] == filename and a[1][-1] == "_", map(map_filename, os.listdir(full_output_folder))))[0] + 1
         except ValueError:
             counter = 1
         except FileNotFoundError:
-            os.mkdir(self.output_dir)
+            os.makedirs(full_output_folder, exist_ok=True)
             counter = 1
 
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
 
-        paths = list()
+        results = list()
         for image in images:
             i = 255. * image.cpu().numpy()
             img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
@@ -765,16 +777,22 @@ class SaveImage:
             if extra_pnginfo is not None:
                 for x in extra_pnginfo:
                     metadata.add_text(x, json.dumps(extra_pnginfo[x]))
-            file = f"{filename_prefix}_{counter:05}_.png"
-            img.save(os.path.join(self.output_dir, file), pnginfo=metadata, optimize=True)
-            paths.append(file + self.url_suffix)
+
+            file = f"{filename}_{counter:05}_.png"
+            img.save(os.path.join(full_output_folder, file), pnginfo=metadata, compress_level=4)
+            results.append({
+                "filename": file,
+                "subfolder": subfolder,
+                "type": self.type
+            });
             counter += 1
-        return { "ui": { "images": paths } }
+
+        return { "ui": { "images": results } }
 
 class PreviewImage(SaveImage):
     def __init__(self):
         self.output_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "temp")
-        self.url_suffix = "?type=temp"
+        self.type = "temp"
 
     @classmethod
     def INPUT_TYPES(s):
@@ -860,8 +878,8 @@ class ImageScale:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": { "image": ("IMAGE",), "upscale_method": (s.upscale_methods,),
-                              "width": ("INT", {"default": 512, "min": 1, "max": 4096, "step": 1}),
-                              "height": ("INT", {"default": 512, "min": 1, "max": 4096, "step": 1}),
+                              "width": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
+                              "height": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
                               "crop": (s.crop_methods,)}}
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "upscale"
@@ -890,6 +908,69 @@ class ImageInvert:
         return (s,)
 
 
+class ImagePadForOutpaint:
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "left": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 64}),
+                "top": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 64}),
+                "right": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 64}),
+                "bottom": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 64}),
+                "feathering": ("INT", {"default": 40, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "MASK")
+    FUNCTION = "expand_image"
+
+    CATEGORY = "image"
+
+    def expand_image(self, image, left, top, right, bottom, feathering):
+        d1, d2, d3, d4 = image.size()
+
+        new_image = torch.zeros(
+            (d1, d2 + top + bottom, d3 + left + right, d4),
+            dtype=torch.float32,
+        )
+        new_image[:, top:top + d2, left:left + d3, :] = image
+
+        mask = torch.ones(
+            (d2 + top + bottom, d3 + left + right),
+            dtype=torch.float32,
+        )
+
+        t = torch.zeros(
+            (d2, d3),
+            dtype=torch.float32
+        )
+
+        if feathering > 0 and feathering * 2 < d2 and feathering * 2 < d3:
+
+            for i in range(d2):
+                for j in range(d3):
+                    dt = i if top != 0 else d2
+                    db = d2 - i if bottom != 0 else d2
+
+                    dl = j if left != 0 else d3
+                    dr = d3 - j if right != 0 else d3
+
+                    d = min(dt, db, dl, dr)
+
+                    if d >= feathering:
+                        continue
+
+                    v = (feathering - d) / feathering
+
+                    t[i, j] = v * v
+
+        mask[top:top + d2, left:left + d3] = t
+
+        return (new_image, mask)
+
+
 NODE_CLASS_MAPPINGS = {
     "KSampler": KSampler,
     "CheckpointLoader": CheckpointLoader,
@@ -908,6 +989,7 @@ NODE_CLASS_MAPPINGS = {
     "LoadImageMask": LoadImageMask,
     "ImageScale": ImageScale,
     "ImageInvert": ImageInvert,
+    "ImagePadForOutpaint": ImagePadForOutpaint,
     "ConditioningCombine": ConditioningCombine,
     "ConditioningSetArea": ConditioningSetArea,
     "KSamplerAdvanced": KSamplerAdvanced,

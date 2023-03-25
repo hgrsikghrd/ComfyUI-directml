@@ -4,6 +4,7 @@ NO_VRAM = 1
 LOW_VRAM = 2
 NORMAL_VRAM = 3
 HIGH_VRAM = 4
+MPS = 5
 
 accelerate_enabled = False
 vram_state = NORMAL_VRAM
@@ -20,16 +21,6 @@ from for_amdgpus.atiadlxx import ATIADLxx
 
 set_vram_to = NORMAL_VRAM
 adl = None
-
-
-def get_torch_device():
-    if vram_state == CPU:
-        return torch.device("cpu")
-    
-    if torch_directml.is_available():
-        return torch_directml.device()
-
-    return torch.cuda.current_device()
 
 
 try:
@@ -63,6 +54,11 @@ try:
             vram_state = HIGH_VRAM
 except:
     pass
+
+try:
+    OOM_EXCEPTION = torch.cuda.OutOfMemoryError
+except:
+    OOM_EXCEPTION = Exception
 
 if "--disable-xformers" in sys.argv:
     XFORMERS_IS_AVAILBLE = False
@@ -104,10 +100,16 @@ if set_vram_to == LOW_VRAM or set_vram_to == NO_VRAM:
     total_vram_available_mb = (total_vram - 1024) // 2
     total_vram_available_mb = int(max(256, total_vram_available_mb))
 
+try:
+    if torch.backends.mps.is_available():
+        vram_state = MPS
+except:
+    pass
+
 if "--cpu" in sys.argv:
     vram_state = CPU
 
-print("Set vram state to:", ["CPU", "NO VRAM", "LOW VRAM", "NORMAL VRAM", "HIGH VRAM"][vram_state])
+print("Set vram state to:", ["CPU", "NO VRAM", "LOW VRAM", "NORMAL VRAM", "HIGH VRAM", "MPS"][vram_state])
 
 
 current_loaded_model = None
@@ -156,6 +158,10 @@ def load_model_gpu(model):
     current_loaded_model = model
     if vram_state == CPU:
         pass
+    elif vram_state == MPS:
+        mps_device = torch.device("mps")
+        real_model.to(mps_device)
+        pass
     elif vram_state == NORMAL_VRAM or vram_state == HIGH_VRAM:
         model_accelerated = False
         real_model.to(get_torch_device())
@@ -183,9 +189,10 @@ def load_controlnet_gpu(models):
         if m not in models:
             m.cpu()
 
+    device = get_torch_device()
     current_gpu_controlnets = []
     for m in models:
-        current_gpu_controlnets.append(m.to(get_torch_device()))
+        current_gpu_controlnets.append(m.to(device))
 
 
 def load_if_low_vram(model):
@@ -199,6 +206,16 @@ def unload_if_low_vram(model):
     if vram_state == LOW_VRAM or vram_state == NO_VRAM:
         return model.cpu()
     return model
+
+def get_torch_device():
+    if vram_state == MPS:
+        return torch.device("mps")
+    if vram_state == CPU:
+        return torch.device("cpu")
+    else:
+        if not torch.cuda.is_available() and torch_directml.is_available():
+            return torch_directml.device()
+        return torch.cuda.current_device()
 
 def get_autocast_device(dev):
     if hasattr(dev, 'type'):
@@ -218,7 +235,7 @@ def get_free_memory(dev=None, torch_free_too=False):
         dev = get_torch_device()
 
     if hasattr(dev, 'type'):
-        if dev.type == 'cpu':
+        if dev.type == 'cpu' or dev.type == 'mps':
             mem_free_total = psutil.virtual_memory().available
             mem_free_torch = mem_free_total
         elif dev.type == 'privateuseone' and adl is not None:
@@ -255,8 +272,12 @@ def cpu_mode():
     global vram_state
     return vram_state == CPU
 
+def mps_mode():
+    global vram_state
+    return vram_state == MPS
+
 def should_use_fp16():
-    if cpu_mode():
+    if cpu_mode() or mps_mode():
         return False #TODO ?
 
     if get_torch_device().type == "privateuseone":
@@ -270,7 +291,7 @@ def should_use_fp16():
         return False
 
     #FP32 is faster on those cards?
-    nvidia_16_series = ["1660", "1650", "1630"]
+    nvidia_16_series = ["1660", "1650", "1630", "T500", "T550", "T600"]
     for x in nvidia_16_series:
         if x in props.name:
             return False
