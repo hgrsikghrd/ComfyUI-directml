@@ -241,8 +241,8 @@ class LoraLoader:
         return {"required": { "model": ("MODEL",),
                               "clip": ("CLIP", ),
                               "lora_name": (folder_paths.get_filename_list("loras"), ),
-                              "strength_model": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
-                              "strength_clip": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
+                              "strength_model": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01}),
+                              "strength_clip": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01}),
                               }}
     RETURN_TYPES = ("MODEL", "CLIP")
     FUNCTION = "load_lora"
@@ -747,12 +747,19 @@ class SaveImage:
                 digits = 0
             return (digits, prefix)
 
+        def compute_vars(input):
+            input = input.replace("%width%", str(images[0].shape[1]))
+            input = input.replace("%height%", str(images[0].shape[0]))
+            return input
+
+        filename_prefix = compute_vars(filename_prefix)
+
         subfolder = os.path.dirname(os.path.normpath(filename_prefix))
         filename = os.path.basename(os.path.normpath(filename_prefix))
 
         full_output_folder = os.path.join(self.output_dir, subfolder)
 
-        if os.path.commonpath((self.output_dir, os.path.realpath(full_output_folder))) != self.output_dir:
+        if os.path.commonpath((self.output_dir, os.path.abspath(full_output_folder))) != self.output_dir:
             print("Saving image outside the output folder is not allowed.")
             return {}
 
