@@ -5,10 +5,20 @@ import { defaultGraph } from "./defaultGraph.js";
 import { getPngMetadata, importA1111 } from "./pnginfo.js";
 
 class ComfyApp {
+	/** 
+	 * List of {number, batchCount} entries to queue
+	 */
+	#queueItems = [];
+	/**
+	 * If the queue is currently being processed
+	 */
+	#processingQueue = false;
+
 	constructor() {
 		this.ui = new ComfyUI(this);
 		this.extensions = [];
 		this.nodeOutputs = {};
+		this.shiftDown = false;
 	}
 
 	/**
@@ -100,6 +110,46 @@ class ComfyApp {
 				}
 			}
 		};
+	}
+
+	#addNodeKeyHandler(node) {
+		const app = this;
+		const origNodeOnKeyDown = node.prototype.onKeyDown;
+
+		node.prototype.onKeyDown = function(e) {
+			if (origNodeOnKeyDown && origNodeOnKeyDown.apply(this, e) === false) {
+				return false;
+			}
+
+			if (this.flags.collapsed || !this.imgs || this.imageIndex === null) {
+				return;
+			}
+
+			let handled = false;
+
+			if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+				if (e.key === "ArrowLeft") {
+					this.imageIndex -= 1;
+				} else if (e.key === "ArrowRight") {
+					this.imageIndex += 1;
+				}
+				this.imageIndex %= this.imgs.length;
+
+				if (this.imageIndex < 0) {
+					this.imageIndex = this.imgs.length + this.imageIndex;
+				}
+				handled = true;
+			} else if (e.key === "Escape") {
+				this.imageIndex = null;
+				handled = true;
+			}
+
+			if (handled === true) {
+				e.preventDefault();
+				e.stopImmediatePropagation();
+				return false;
+			}
+		}
 	}
 
 	/**
@@ -418,6 +468,59 @@ class ComfyApp {
 	}
 
 	/**
+	 * Handle keypress
+	 *
+	 * Ctrl + M mute/unmute selected nodes
+	 */
+	#addProcessKeyHandler() {
+		const self = this;
+		const origProcessKey = LGraphCanvas.prototype.processKey;
+		LGraphCanvas.prototype.processKey = function(e) {
+			const res = origProcessKey.apply(this, arguments);
+
+			if (res === false) {
+				return res;
+			}
+
+			if (!this.graph) {
+				return;
+			}
+
+			var block_default = false;
+
+			if (e.target.localName == "input") {
+				return;
+			}
+
+			if (e.type == "keydown") {
+				// Ctrl + M mute/unmute
+				if (e.keyCode == 77 && e.ctrlKey) {
+					if (this.selected_nodes) {
+						for (var i in this.selected_nodes) {
+							if (this.selected_nodes[i].mode === 2) { // never
+								this.selected_nodes[i].mode = 0; // always
+							} else {
+								this.selected_nodes[i].mode = 2; // never
+							}
+						}
+					}
+					block_default = true;
+				}
+			}
+
+			this.graph.change();
+
+			if (block_default) {
+				e.preventDefault();
+				e.stopImmediatePropagation();
+				return false;
+			}
+
+			return res;
+		};
+	}
+
+	/**
 	 * Draws group header bar
 	 */
 	#addDrawGroupsHandler() {
@@ -465,10 +568,11 @@ class ComfyApp {
 	 * Draws node highlights (executing, drag drop) and progress bar
 	 */
 	#addDrawNodeHandler() {
-		const orig = LGraphCanvas.prototype.drawNodeShape;
+		const origDrawNodeShape = LGraphCanvas.prototype.drawNodeShape;
 		const self = this;
+
 		LGraphCanvas.prototype.drawNodeShape = function (node, ctx, size, fgcolor, bgcolor, selected, mouse_over) {
-			const res = orig.apply(this, arguments);
+			const res = origDrawNodeShape.apply(this, arguments);
 
 			let color = null;
 			if (node.id === +self.runningNodeId) {
@@ -517,6 +621,21 @@ class ComfyApp {
 
 			return res;
 		};
+
+		const origDrawNode = LGraphCanvas.prototype.drawNode;
+		LGraphCanvas.prototype.drawNode = function (node, ctx) {
+			var editor_alpha = this.editor_alpha;
+
+			if (node.mode === 2) { // never
+				this.editor_alpha = 0.4;
+			}
+
+			const res = origDrawNode.apply(this, arguments);
+
+			this.editor_alpha = editor_alpha;
+
+			return res;
+		};
 	}
 
 	/**
@@ -548,6 +667,10 @@ class ComfyApp {
 
 		api.addEventListener("executed", ({ detail }) => {
 			this.nodeOutputs[detail.node] = detail.output;
+			const node = this.graph.getNodeById(detail.node);
+			if (node?.onExecuted) {
+				node.onExecuted(detail.output);
+			}
 		});
 
 		api.init();
@@ -555,10 +678,15 @@ class ComfyApp {
 
 	#addKeyboardHandler() {
 		window.addEventListener("keydown", (e) => {
+			this.shiftDown = e.shiftKey;
+
 			// Queue prompt using ctrl or command + enter
 			if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.keyCode === 13 || e.keyCode === 10)) {
 				this.queuePrompt(e.shiftKey ? -1 : 0);
 			}
+		});
+		window.addEventListener("keyup", (e) => {
+			this.shiftDown = e.shiftKey;
 		});
 	}
 
@@ -588,10 +716,14 @@ class ComfyApp {
 		document.body.prepend(canvasEl);
 
 		this.#addProcessMouseHandler();
+		this.#addProcessKeyHandler();
 
 		this.graph = new LGraph();
 		const canvas = (this.canvas = new LGraphCanvas(canvasEl, this.graph));
 		this.ctx = canvasEl.getContext("2d");
+
+		LiteGraph.release_link_on_empty_shows_menu = true;
+		LiteGraph.alt_drag_do_clone_nodes = true;
 
 		this.graph.start();
 
@@ -669,18 +801,22 @@ class ComfyApp {
 						const inputData = inputs[inputName];
 						const type = inputData[0];
 
-						if (Array.isArray(type)) {
-							// Enums
-							Object.assign(config, widgets.COMBO(this, inputName, inputData, app) || {});
-						} else if (`${type}:${inputName}` in widgets) {
-							// Support custom widgets by Type:Name
-							Object.assign(config, widgets[`${type}:${inputName}`](this, inputName, inputData, app) || {});
-						} else if (type in widgets) {
-							// Standard type widgets
-							Object.assign(config, widgets[type](this, inputName, inputData, app) || {});
-						} else {
-							// Node connection inputs
+						if(inputData[1]?.forceInput) {
 							this.addInput(inputName, type);
+						} else {
+							if (Array.isArray(type)) {
+								// Enums
+								Object.assign(config, widgets.COMBO(this, inputName, inputData, app) || {});
+							} else if (`${type}:${inputName}` in widgets) {
+								// Support custom widgets by Type:Name
+								Object.assign(config, widgets[`${type}:${inputName}`](this, inputName, inputData, app) || {});
+							} else if (type in widgets) {
+								// Standard type widgets
+								Object.assign(config, widgets[type](this, inputName, inputData, app) || {});
+							} else {
+								// Node connection inputs
+								this.addInput(inputName, type);
+							}
 						}
 					}
 
@@ -707,6 +843,7 @@ class ComfyApp {
 
 			this.#addNodeContextMenuHandler(node);
 			this.#addDrawBackgroundHandler(node, app);
+			this.#addNodeKeyHandler(node);
 
 			await this.#invokeExtensionsAsync("beforeRegisterNodeDef", node, nodeData);
 			LiteGraph.registerNodeType(nodeId, node);
@@ -724,7 +861,7 @@ class ComfyApp {
 		this.clean();
 
 		if (!graphData) {
-			graphData = defaultGraph;
+			graphData = structuredClone(defaultGraph);
 		}
 
 		// Patch T2IAdapterLoader to ControlNetLoader since they are the same node now
@@ -777,6 +914,11 @@ class ComfyApp {
 				continue;
 			}
 
+			if (node.mode === 2) {
+				// Don't serialize muted nodes
+				continue;
+			}
+
 			const inputs = {};
 			const widgets = node.widgets;
 
@@ -816,35 +958,63 @@ class ComfyApp {
 			};
 		}
 
+		// Remove inputs connected to removed nodes
+
+		for (const o in output) {
+			for (const i in output[o].inputs) {
+				if (Array.isArray(output[o].inputs[i])
+					&& output[o].inputs[i].length === 2
+					&& !output[output[o].inputs[i][0]]) {
+					delete output[o].inputs[i];
+				}
+			}
+		}
+
 		return { workflow, output };
 	}
 
 	async queuePrompt(number, batchCount = 1) {
-		for (let i = 0; i < batchCount; i++) {
-			const p = await this.graphToPrompt();
+		this.#queueItems.push({ number, batchCount });
 
-			try {
-				await api.queuePrompt(number, p);
-			} catch (error) {
-				this.ui.dialog.show(error.response || error.toString());
-				return;
-			}
+		// Only have one action process the items so each one gets a unique seed correctly
+		if (this.#processingQueue) {
+			return;
+		}
+	
+		this.#processingQueue = true;
+		try {
+			while (this.#queueItems.length) {
+				({ number, batchCount } = this.#queueItems.pop());
 
-			for (const n of p.workflow.nodes) {
-				const node = graph.getNodeById(n.id);
-				if (node.widgets) {
-					for (const widget of node.widgets) {
-						// Allow widgets to run callbacks after a prompt has been queued
-						// e.g. random seed after every gen
-						if (widget.afterQueued) {
-							widget.afterQueued();
+				for (let i = 0; i < batchCount; i++) {
+					const p = await this.graphToPrompt();
+
+					try {
+						await api.queuePrompt(number, p);
+					} catch (error) {
+						this.ui.dialog.show(error.response || error.toString());
+						break;
+					}
+
+					for (const n of p.workflow.nodes) {
+						const node = graph.getNodeById(n.id);
+						if (node.widgets) {
+							for (const widget of node.widgets) {
+								// Allow widgets to run callbacks after a prompt has been queued
+								// e.g. random seed after every gen
+								if (widget.afterQueued) {
+									widget.afterQueued();
+								}
+							}
 						}
 					}
+
+					this.canvas.draw(true, true);
+					await this.ui.queue.update();
 				}
 			}
-
-			this.canvas.draw(true, true);
-			await this.ui.queue.update();
+		} finally {
+			this.#processingQueue = false;
 		}
 	}
 
