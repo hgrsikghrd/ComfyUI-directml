@@ -4,32 +4,33 @@ import os
 import sys
 import json
 import hashlib
-import copy
 import traceback
 
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 import numpy as np
 
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "comfy"))
 
 
+import comfy.diffusers_convert
 import comfy.samplers
 import comfy.sd
 import comfy.utils
 
 import comfy.clip_vision
 
-import model_management
+import comfy.model_management
 import importlib
 
 import folder_paths
 
 def before_node_execution():
-    model_management.throw_exception_if_processing_interrupted()
+    comfy.model_management.throw_exception_if_processing_interrupted()
 
 def interrupt_processing(value=True):
-    model_management.interrupt_current_processing(value)
+    comfy.model_management.interrupt_current_processing(value)
 
 MAX_RESOLUTION=8192
 
@@ -218,6 +219,30 @@ class CheckpointLoaderSimple:
         ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
         out = comfy.sd.load_checkpoint_guess_config(ckpt_path, output_vae=True, output_clip=True, embedding_directory=folder_paths.get_folder_paths("embeddings"))
         return out
+
+class DiffusersLoader:
+    @classmethod
+    def INPUT_TYPES(cls):
+        paths = []
+        for search_path in folder_paths.get_folder_paths("diffusers"):
+            if os.path.exists(search_path):
+                paths += next(os.walk(search_path))[1]
+        return {"required": {"model_path": (paths,), }}
+    RETURN_TYPES = ("MODEL", "CLIP", "VAE")
+    FUNCTION = "load_checkpoint"
+
+    CATEGORY = "advanced/loaders"
+
+    def load_checkpoint(self, model_path, output_vae=True, output_clip=True):
+        for search_path in folder_paths.get_folder_paths("diffusers"):
+            if os.path.exists(search_path):
+                paths = next(os.walk(search_path))[1]
+                if model_path in paths:
+                    model_path = os.path.join(search_path, model_path)
+                    break
+
+        return comfy.diffusers_convert.load_diffusers(model_path, fp16=comfy.model_management.should_use_fp16(), output_vae=output_vae, output_clip=output_clip, embedding_directory=folder_paths.get_folder_paths("embeddings"))
+
 
 class unCLIPCheckpointLoader:
     @classmethod
@@ -655,7 +680,7 @@ class SetLatentNoiseMask:
 def common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise=1.0, disable_noise=False, start_step=None, last_step=None, force_full_denoise=False):
     latent_image = latent["samples"]
     noise_mask = None
-    device = model_management.get_torch_device()
+    device = comfy.model_management.get_torch_device()
 
     if disable_noise:
         noise = torch.zeros(latent_image.size(), dtype=latent_image.dtype, layout=latent_image.layout, device="cpu")
@@ -671,7 +696,7 @@ def common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, 
         noise_mask = noise_mask.to(device)
 
     real_model = None
-    model_management.load_model_gpu(model)
+    comfy.model_management.load_model_gpu(model)
     real_model = model.model
 
     noise = noise.to(device)
@@ -701,7 +726,7 @@ def common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, 
     control_net_models = []
     for x in control_nets:
         control_net_models += x.get_control_models()
-    model_management.load_controlnet_gpu(control_net_models)
+    comfy.model_management.load_controlnet_gpu(control_net_models)
 
     if sampler_name in comfy.samplers.KSampler.SAMPLERS:
         sampler = comfy.samplers.KSampler(real_model, steps=steps, device=device, sampler=sampler_name, scheduler=scheduler, denoise=denoise, model_options=model.model_options)
@@ -846,7 +871,7 @@ class SaveImage:
                 "filename": file,
                 "subfolder": subfolder,
                 "type": self.type
-            });
+            })
             counter += 1
 
         return { "ui": { "images": results } }
@@ -907,7 +932,7 @@ class LoadImageMask:
                     "channel": (["alpha", "red", "green", "blue"], ),}
                 }
 
-    CATEGORY = "image"
+    CATEGORY = "mask"
 
     RETURN_TYPES = ("MASK",)
     FUNCTION = "load_image"
@@ -915,6 +940,8 @@ class LoadImageMask:
         input_dir = folder_paths.get_input_directory()
         image_path = os.path.join(input_dir, image)
         i = Image.open(image_path)
+        if i.getbands() != ("R", "G", "B", "A"):
+            i = i.convert("RGBA")
         mask = None
         c = channel[0].upper()
         if c in i.getbands():
@@ -1076,6 +1103,55 @@ NODE_CLASS_MAPPINGS = {
     "TomePatchModel": TomePatchModel,
     "unCLIPCheckpointLoader": unCLIPCheckpointLoader,
     "CheckpointLoader": CheckpointLoader,
+    "DiffusersLoader": DiffusersLoader,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    # Sampling
+    "KSampler": "KSampler",
+    "KSamplerAdvanced": "KSampler (Advanced)",
+    # Loaders
+    "CheckpointLoader": "Load Checkpoint (With Config)",
+    "CheckpointLoaderSimple": "Load Checkpoint",
+    "VAELoader": "Load VAE",
+    "LoraLoader": "Load LoRA",
+    "CLIPLoader": "Load CLIP",
+    "ControlNetLoader": "Load ControlNet Model",
+    "DiffControlNetLoader": "Load ControlNet Model (diff)",
+    "StyleModelLoader": "Load Style Model",
+    "CLIPVisionLoader": "Load CLIP Vision",
+    "UpscaleModelLoader": "Load Upscale Model",
+    # Conditioning
+    "CLIPVisionEncode": "CLIP Vision Encode",
+    "StyleModelApply": "Apply Style Model",
+    "CLIPTextEncode": "CLIP Text Encode (Prompt)",
+    "CLIPSetLastLayer": "CLIP Set Last Layer",
+    "ConditioningCombine": "Conditioning (Combine)",
+    "ConditioningSetArea": "Conditioning (Set Area)",
+    "ControlNetApply": "Apply ControlNet",
+    # Latent
+    "VAEEncodeForInpaint": "VAE Encode (for Inpainting)",
+    "SetLatentNoiseMask": "Set Latent Noise Mask",
+    "VAEDecode": "VAE Decode",
+    "VAEEncode": "VAE Encode",
+    "LatentRotate": "Rotate Latent",
+    "LatentFlip": "Flip Latent",
+    "LatentCrop": "Crop Latent",
+    "EmptyLatentImage": "Empty Latent Image",
+    "LatentUpscale": "Upscale Latent",
+    "LatentComposite": "Latent Composite",
+    # Image
+    "SaveImage": "Save Image",
+    "PreviewImage": "Preview Image",
+    "LoadImage": "Load Image",
+    "LoadImageMask": "Load Image (as Mask)",
+    "ImageScale": "Upscale Image",
+    "ImageUpscaleWithModel": "Upscale Image (using Model)",
+    "ImageInvert": "Invert Image",
+    "ImagePadForOutpaint": "Pad Image for Outpainting",
+    # _for_testing
+    "VAEDecodeTiled": "VAE Decode (Tiled)",
+    "VAEEncodeTiled": "VAE Encode (Tiled)",
 }
 
 def load_custom_node(module_path):
@@ -1093,6 +1169,8 @@ def load_custom_node(module_path):
         module_spec.loader.exec_module(module)
         if hasattr(module, "NODE_CLASS_MAPPINGS") and getattr(module, "NODE_CLASS_MAPPINGS") is not None:
             NODE_CLASS_MAPPINGS.update(module.NODE_CLASS_MAPPINGS)
+            if hasattr(module, "NODE_DISPLAY_NAME_MAPPINGS") and getattr(module, "NODE_DISPLAY_NAME_MAPPINGS") is not None:
+                NODE_DISPLAY_NAME_MAPPINGS.update(module.NODE_DISPLAY_NAME_MAPPINGS)
         else:
             print(f"Skip {module_path} module for custom nodes due to the lack of NODE_CLASS_MAPPINGS.")
     except Exception as e:
@@ -1100,17 +1178,19 @@ def load_custom_node(module_path):
         print(f"Cannot import {module_path} module for custom nodes:", e)
 
 def load_custom_nodes():
-    CUSTOM_NODE_PATH = os.path.join(os.path.dirname(os.path.realpath(__file__)), "custom_nodes")
-    possible_modules = os.listdir(CUSTOM_NODE_PATH)
-    if "__pycache__" in possible_modules:
-        possible_modules.remove("__pycache__")
+    node_paths = folder_paths.get_folder_paths("custom_nodes")
+    for custom_node_path in node_paths:
+        possible_modules = os.listdir(custom_node_path)
+        if "__pycache__" in possible_modules:
+            possible_modules.remove("__pycache__")
 
-    for possible_module in possible_modules:
-        module_path = os.path.join(CUSTOM_NODE_PATH, possible_module)
-        if os.path.isfile(module_path) and os.path.splitext(module_path)[1] != ".py": continue
-        load_custom_node(module_path)
+        for possible_module in possible_modules:
+            module_path = os.path.join(custom_node_path, possible_module)
+            if os.path.isfile(module_path) and os.path.splitext(module_path)[1] != ".py": continue
+            load_custom_node(module_path)
 
 def init_custom_nodes():
     load_custom_nodes()
     load_custom_node(os.path.join(os.path.join(os.path.dirname(os.path.realpath(__file__)), "comfy_extras"), "nodes_upscale_model.py"))
     load_custom_node(os.path.join(os.path.join(os.path.dirname(os.path.realpath(__file__)), "comfy_extras"), "nodes_post_processing.py"))
+    load_custom_node(os.path.join(os.path.join(os.path.dirname(os.path.realpath(__file__)), "comfy_extras"), "nodes_mask.py"))

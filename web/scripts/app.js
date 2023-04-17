@@ -1,30 +1,51 @@
 import { ComfyWidgets } from "./widgets.js";
-import { ComfyUI } from "./ui.js";
+import { ComfyUI, $el } from "./ui.js";
 import { api } from "./api.js";
 import { defaultGraph } from "./defaultGraph.js";
 import { getPngMetadata, importA1111 } from "./pnginfo.js";
 
-class ComfyApp {
-	/** 
-	 * List of {number, batchCount} entries to queue
+/** 
+ * @typedef {import("types/comfy").ComfyExtension} ComfyExtension
+ */
+
+export class ComfyApp {
+	/**
+	 * List of entries to queue
+	 * @type {{number: number, batchCount: number}[]}
 	 */
 	#queueItems = [];
 	/**
 	 * If the queue is currently being processed
+	 * @type {boolean}
 	 */
 	#processingQueue = false;
 
 	constructor() {
 		this.ui = new ComfyUI(this);
+
+		/**
+		 * List of extensions that are registered with the app
+		 * @type {ComfyExtension[]}
+		 */
 		this.extensions = [];
+
+		/**
+		 * Stores the execution output data for each node
+		 * @type {Record<string, any>}
+		 */
 		this.nodeOutputs = {};
+
+		/**
+		 * If the shift key on the keyboard is pressed
+		 * @type {boolean}
+		 */
 		this.shiftDown = false;
 	}
 
 	/**
 	 * Invoke an extension callback
-	 * @param {string} method The extension callback to execute
-	 * @param  {...any} args Any arguments to pass to the callback
+	 * @param {keyof ComfyExtension} method The extension callback to execute
+	 * @param  {any[]} args Any arguments to pass to the callback
 	 * @returns
 	 */
 	#invokeExtensions(method, ...args) {
@@ -362,8 +383,20 @@ class ComfyApp {
 			if (n && n.onDragDrop && (await n.onDragDrop(event))) {
 				return;
 			}
-
+			// Dragging from Chrome->Firefox there is a file but its a bmp, so ignore that
+			if (event.dataTransfer.files.length && event.dataTransfer.files[0].type !== "image/bmp") {
 			await this.handleFile(event.dataTransfer.files[0]);
+			} else {
+				// Try loading the first URI in the transfer list
+				const validTypes = ["text/uri-list", "text/x-moz-url"];
+				const match = [...event.dataTransfer.types].find((t) => validTypes.find(v => t === v));
+				if (match) {
+					const uri = event.dataTransfer.getData(match)?.split("\n")?.[0];
+					if (uri) {
+						await this.handleFile(await (await fetch(uri)).blob());
+					}
+				}
+			}
 		});
 
 		// Always clear over node on drag leave
@@ -679,11 +712,6 @@ class ComfyApp {
 	#addKeyboardHandler() {
 		window.addEventListener("keydown", (e) => {
 			this.shiftDown = e.shiftKey;
-
-			// Queue prompt using ctrl or command + enter
-			if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.keyCode === 13 || e.keyCode === 10)) {
-				this.queuePrompt(e.shiftKey ? -1 : 0);
-			}
 		});
 		window.addEventListener("keyup", (e) => {
 			this.shiftDown = e.shiftKey;
@@ -835,7 +863,7 @@ class ComfyApp {
 					app.#invokeExtensionsAsync("nodeCreated", this);
 				},
 				{
-					title: nodeData.name,
+					title: nodeData.display_name || nodeData.name,
 					comfyClass: nodeData.name,
 				}
 			);
@@ -864,12 +892,62 @@ class ComfyApp {
 			graphData = structuredClone(defaultGraph);
 		}
 
-		// Patch T2IAdapterLoader to ControlNetLoader since they are the same node now
+		const missingNodeTypes = [];
 		for (let n of graphData.nodes) {
+			// Patch T2IAdapterLoader to ControlNetLoader since they are the same node now
 			if (n.type == "T2IAdapterLoader") n.type = "ControlNetLoader";
+
+			// Find missing node types
+			if (!(n.type in LiteGraph.registered_node_types)) {
+				missingNodeTypes.push(n.type);
+			}
 		}
 
-		this.graph.configure(graphData);
+		try {
+			this.graph.configure(graphData);
+		} catch (error) {
+			let errorHint = [];
+			// Try extracting filename to see if it was caused by an extension script
+			const filename = error.fileName || (error.stack || "").match(/(\/extensions\/.*\.js)/)?.[1];
+			const pos = (filename || "").indexOf("/extensions/");
+			if (pos > -1) {
+				errorHint.push(
+					$el("span", { textContent: "This may be due to the following script:" }),
+					$el("br"),
+					$el("span", {
+						style: {
+							fontWeight: "bold",
+						},
+						textContent: filename.substring(pos),
+					})
+				);
+			}
+
+			// Show dialog to let the user know something went wrong loading the data
+			this.ui.dialog.show(
+				$el("div", [
+					$el("p", { textContent: "Loading aborted due to error reloading workflow data" }),
+					$el("pre", {
+						style: { padding: "5px", backgroundColor: "rgba(255,0,0,0.2)" },
+						textContent: error.toString(),
+					}),
+					$el("pre", {
+						style: {
+							padding: "5px",
+							color: "#ccc",
+							fontSize: "10px",
+							maxHeight: "50vh",
+							overflow: "auto",
+							backgroundColor: "rgba(0,0,0,0.2)",
+						},
+						textContent: error.stack || "No stacktrace available",
+					}),
+					...errorHint,
+				]).outerHTML
+			);
+
+			return;
+		}
 
 		for (const node of this.graph._nodes) {
 			const size = node.computeSize();
@@ -888,10 +966,27 @@ class ComfyApp {
 							}
 						}
 					}
+					if (node.type == "KSampler" || node.type == "KSamplerAdvanced" || node.type == "PrimitiveNode") {
+						if (widget.name == "control_after_generate") {
+							if (widget.value === true) {
+								widget.value = "randomize";
+							} else if (widget.value === false) {
+								widget.value = "fixed";
+							}
+						}
+					}
 				}
 			}
 
 			this.#invokeExtensions("loadedGraphNode", node);
+		}
+
+		if (missingNodeTypes.length) {
+			this.ui.dialog.show(
+				`When loading the graph, the following node types were not found: <ul>${Array.from(new Set(missingNodeTypes)).map(
+					(t) => `<li>${t}</li>`
+				).join("")}</ul>Nodes that have failed to load will show as red on the graph.`
+			);
 		}
 	}
 
@@ -1032,7 +1127,7 @@ class ComfyApp {
 					importA1111(this.graph, pngInfo.parameters);
 				}
 			}
-		} else if (file.type === "application/json" || file.name.endsWith(".json")) {
+		} else if (file.type === "application/json" || file.name?.endsWith(".json")) {
 			const reader = new FileReader();
 			reader.onload = () => {
 				this.loadGraphData(JSON.parse(reader.result));
@@ -1041,6 +1136,10 @@ class ComfyApp {
 		}
 	}
 
+	/**
+	 * Registers a Comfy web extension with the app
+	 * @param {ComfyExtension} extension
+	 */
 	registerExtension(extension) {
 		if (!extension.name) {
 			throw new Error("Extensions must have a 'name' property.");

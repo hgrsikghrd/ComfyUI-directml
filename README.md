@@ -1,6 +1,6 @@
 ComfyUI
 =======
-A powerful and modular stable diffusion GUI.
+A powerful and modular stable diffusion GUI and backend.
 -----------
 ![ComfyUI Screenshot](comfyui_screenshot.png)
 
@@ -14,7 +14,7 @@ This ui will let you design and execute advanced stable diffusion pipelines usin
 - Many optimizations: Only re-executes the parts of the workflow that changes between executions.
 - Command line option: ```--lowvram``` to make it work on GPUs with less than 3GB vram (enabled automatically on GPUs with low vram)
 - Works even if you don't have a GPU with: ```--cpu``` (slow)
-- Can load both ckpt and safetensors models/checkpoints. Standalone VAEs and CLIP models.
+- Can load ckpt, safetensors and diffusers models/checkpoints. Standalone VAEs and CLIP models.
 - Embeddings/Textual inversion
 - [Loras (regular, locon and loha)](https://comfyanonymous.github.io/ComfyUI_examples/lora/)
 - Loading full workflows (with seeds) from generated PNG files.
@@ -32,9 +32,28 @@ This ui will let you design and execute advanced stable diffusion pipelines usin
 Workflow examples can be found on the [Examples page](https://comfyanonymous.github.io/ComfyUI_examples/)
 
 ## Shortcuts
-- **Ctrl + A** select all nodes
-- **Ctrl + M** mute/unmute selected nodes
-- **Delete** or **Backspace** delete selected nodes
+
+| Keybind | Explanation |
+| - | - |
+| Ctrl + Enter | Queue up current graph for generation |
+| Ctrl + Shift + Enter | Queue up current graph as first for generation |
+| Ctrl + S | Save workflow |
+| Ctrl + O | Load workflow |
+| Ctrl + A | Select all nodes |
+| Ctrl + M | Mute/unmute selected nodes |
+| Delete/Backspace | Delete selected nodes |
+| Ctrl + Delete/Backspace | Delete the current graph |
+| Space | Move the canvas around when held and moving the cursor |
+| Ctrl/Shift + Click | Add clicked node to selection |
+| Ctrl + C/Ctrl + V | Copy and paste selected nodes (without maintaining connections to outputs of unselected nodes) |
+| Ctrl + C/Ctrl + Shift + V| Copy and paste selected nodes (maintaining connections from outputs of unselected nodes to inputs of pasted nodes) |
+| Shift + Drag | Move multiple selected nodes at the same time |
+| Ctrl + D | Load default graph |
+| Q | Toggle visibility of the queue |
+| H | Toggle visibility of history |
+| R | Refresh graph |
+
+Ctrl can also be replaced with Cmd instead for MacOS users
 
 # Installing
 
@@ -92,6 +111,11 @@ Install the dependencies by opening your terminal inside the ComfyUI folder and:
 
 After this you should have everything installed and can proceed to running ComfyUI.
 
+### Others:
+
+[Intel Arc](https://github.com/comfyanonymous/ComfyUI/discussions/476)
+
+Mac/MPS: There is basic support in the code but until someone makes some install instruction you are on your own.
 
 ### I already have another UI for Stable Diffusion installed do I really have to install all of these dependencies?
 
@@ -146,9 +170,9 @@ This will let you use: pip3.10 to install all the dependencies.
 
 ## How to increase generation speed?
 
-Make sure you use the CheckpointLoaderSimple node to load checkpoints. It will auto pick the right settings depending on your GPU.
+Make sure you use the regular loaders/Load Checkpoint node to load checkpoints. It will auto pick the right settings depending on your GPU.
 
-You can set this command line setting to disable the upcasting to fp32 in some cross attention operations which will increase your speed. Note that this doesn't do anything when xformers is enabled and will very likely give you black images on SD2.x models.
+You can set this command line setting to disable the upcasting to fp32 in some cross attention operations which will increase your speed. Note that this will very likely give you black images on SD2.x models. If you use xformers this option does not do anything.
 
 ```--dont-upcast-attention```
 

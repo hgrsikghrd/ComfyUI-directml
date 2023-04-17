@@ -9,7 +9,7 @@ from typing import Optional, Any
 from ldm.modules.diffusionmodules.util import checkpoint
 from .sub_quadratic_attention import efficient_dot_product_attention
 
-import model_management
+from comfy import model_management
 
 from . import tomesd
 
@@ -20,6 +20,8 @@ if model_management.xformers_enabled():
 # CrossAttn precision handling
 import os
 _ATTN_PRECISION = os.environ.get("ATTN_PRECISION", "fp32")
+
+from cli_args import args
 
 def exists(val):
     return val is not None
@@ -474,7 +476,6 @@ class CrossAttentionPytorch(nn.Module):
 
         return self.to_out(out)
 
-import sys
 if model_management.xformers_enabled():
     print("Using xformers cross attention")
     CrossAttention = MemoryEfficientCrossAttention
@@ -482,7 +483,7 @@ elif model_management.pytorch_attention_enabled():
     print("Using pytorch cross attention")
     CrossAttention = CrossAttentionPytorch
 else:
-    if "--use-split-cross-attention" in sys.argv:
+    if args.use_split_cross_attention:
         print("Using split optimization for cross attention")
         CrossAttention = CrossAttentionDoggettx
     else:
